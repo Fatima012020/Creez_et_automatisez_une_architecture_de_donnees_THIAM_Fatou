@@ -174,3 +174,25 @@ CREATE TABLE commute_validation (
     CONSTRAINT chk_commute_threshold
         CHECK (threshold_km IS NULL OR threshold_km >= 0)
 );
+
+-- ============================================================
+-- TABLE : MONITORING.DATA_QUALITY_METRICS
+-- ============================================================
+-- Historise les résultats des contrôles de qualité du pipeline.
+-- Elle permet de conserver une trace des anomalies détectées
+-- lors des différentes exécutions du monitoring.
+
+CREATE SCHEMA IF NOT EXISTS monitoring;
+
+CREATE TABLE IF NOT EXISTS monitoring.data_quality_metrics (
+    quality_id SERIAL PRIMARY KEY,
+
+    -- Nom du contrôle exécuté.
+    metric_name VARCHAR(100) NOT NULL,
+
+    -- Valeur mesurée par le contrôle.
+    metric_value INTEGER NOT NULL,
+
+    -- Date et heure d'exécution du contrôle.
+    checked_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

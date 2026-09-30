@@ -290,6 +290,49 @@ try:
 
     if blocking_errors > 0:
         quality_status = "ERROR"
+        # --------------------------------------------------------
+    # HISTORISATION DES MÉTRIQUES DE QUALITÉ
+    # --------------------------------------------------------
+    # Les résultats sont enregistrés dans PostgreSQL afin de
+    # conserver un historique des contrôles du pipeline.
+
+    quality_metrics = [
+        ("duplicate_activity_id", duplicate_activity_id),
+        ("null_activity_id", null_activity_id),
+        ("null_employee_id_activities", null_employee_id),
+        ("inconsistent_dates", inconsistent_dates),
+        ("negative_distances", negative_distances),
+        (
+            "duplicate_benefit_employee_id",
+            duplicate_benefit_employee_id,
+        ),
+        (
+            "null_benefit_employee_id",
+            null_benefit_employee_id,
+        ),
+    ]
+
+    metrics_df = spark.createDataFrame(
+        quality_metrics,
+        ["metric_name", "metric_value"]
+    )
+
+    (
+        metrics_df.write
+        .format("jdbc")
+        .option("url", POSTGRES_URL)
+        .option("dbtable", "monitoring.data_quality_metrics")
+        .option("user", POSTGRES_USER)
+        .option("password", POSTGRES_PASSWORD)
+        .option("driver", "org.postgresql.Driver")
+        .mode("append")
+        .save()
+    )
+
+    print(
+        "Métriques de qualité enregistrées dans "
+        "monitoring.data_quality_metrics."
+    )
 
 except Exception as exc:
     quality_status = "ERROR"
