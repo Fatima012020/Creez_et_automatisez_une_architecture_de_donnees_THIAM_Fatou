@@ -1,0 +1,49 @@
+# ============================================================
+# SPORT DATA SOLUTION - FICHIERS NON VERSIONNES
+# ============================================================
+
+# Environnement virtuel Python
+.venv/
+venv/
+
+# Cache Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Variables d'environnement et secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+logs/
+*.log
+
+# Spark - checkpoints de streaming
+data/checkpoints/
+
+# Delta Lake - donnees generees localement
+data/delta/
+
+# Fichiers temporaires Spark / Hadoop
+.sparkStaging/
+_metastore_db/
+derby.log
+*.crc
+
+# IDE
+.vscode/
+.idea/
+
+# Systeme
+.DS_Store
+Thumbs.db
+
+# Fichiers temporaires
+*.tmp
+*.temp
+
+# Configuration locale Debezium contenant les identifiants PostgreSQL
+debezium/postgres-activities-connector.json

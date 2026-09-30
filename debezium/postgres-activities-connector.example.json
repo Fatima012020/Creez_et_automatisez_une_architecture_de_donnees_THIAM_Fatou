@@ -1,0 +1,28 @@
+{
+  "name": "sport-data-postgres-connector",
+
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+
+    "database.hostname": "postgres",
+    "database.port": "5432",
+    "database.user": "sport_user",
+    "database.password": "YOUR_POSTGRES_PASSWORD",
+    "database.dbname": "sport_data_db",
+
+    "topic.prefix": "sport-data",
+
+    "plugin.name": "pgoutput",
+
+    "slot.name": "sport_data_slot",
+
+    "publication.name": "sport_data_publication",
+    "publication.autocreate.mode": "disabled",
+
+    "table.include.list": "public.activities",
+
+    "snapshot.mode": "no_data",
+
+    "tombstones.on.delete": "false"
+  }
+}

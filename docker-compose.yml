@@ -1,0 +1,201 @@
+services:
+
+  # -------------------------------------------------------
+  # BASE DE DONNÉES POSTGRESQL
+  # -------------------------------------------------------
+  # PostgreSQL stockera les données du POC :
+  # salariés, profils sportifs, activités et résultats
+  # de validation des trajets.
+  postgres:
+    image: postgres:16
+
+    container_name: sport_data_postgres
+
+    # Redémarre automatiquement le conteneur
+    # sauf s'il a été arrêté volontairement.
+    restart: unless-stopped
+
+    # Les informations de connexion sont récupérées
+    # depuis le fichier .env.
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+
+    # Le port PostgreSQL du conteneur est rendu
+    # accessible depuis notre ordinateur.
+    ports:
+      - "5433:5432"
+
+    # Ce volume permet de conserver les données même
+    # lorsque le conteneur PostgreSQL est arrêté.
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+     # Active la réplication logique PostgreSQL.
+    # Debezium pourra ensuite exploiter le WAL
+    # pour détecter les changements des tables surveillées.
+    command:
+      - "postgres"
+      - "-c"
+      - "wal_level=logical"
+
+    # Vérification automatique de l'état de PostgreSQL.
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redpanda:
+    # Redpanda est compatible avec le protocole Kafka.
+    # Il servira de plateforme de streaming pour transporter
+    # les événements produits plus tard par Debezium.
+    image: redpandadata/redpanda:latest
+    container_name: sport_data_redpanda
+
+    command:
+      - redpanda
+      - start
+
+      # Mode adapté à notre POC local :
+      # un seul nœud Redpanda.
+      - --smp
+      - "1"
+
+      # Limite la mémoire utilisée par le conteneur.
+      - --memory
+      - "1G"
+
+      # Désactive la réservation mémoire spécifique
+      # aux environnements de production.
+      - --overprovisioned
+
+      # Deux interfaces Kafka sont exposées :
+      #
+      # INTERNAL : communication entre les conteneurs Docker.
+      # EXTERNAL : communication depuis Windows.
+      - --kafka-addr
+      - internal://0.0.0.0:9092,external://0.0.0.0:19092
+
+      # Adresses annoncées aux clients Kafka.
+      #
+      # Debezium, situé dans Docker, utilise redpanda:9092.
+      # Python, exécuté sur Windows, utilise localhost:19092.
+      - --advertise-kafka-addr
+      - internal://redpanda:9092,external://localhost:19092
+
+    ports:
+      # Port Kafka interne, déjà utilisé dans notre architecture.
+      - "9092:9092"
+
+      # Port Kafka externe destiné aux programmes
+      # exécutés directement sur Windows.
+      - "19092:19092"
+
+    volumes:
+      # Les événements restent persistants même si
+      # le conteneur est redémarré.
+      - redpanda_data:/var/lib/redpanda/data
+
+  debezium:
+    # Kafka Connect avec les connecteurs Debezium intégrés.
+    # Il servira ensuite à capturer les changements
+    # PostgreSQL et à les publier dans Redpanda.
+    image: quay.io/debezium/connect:3.3
+    container_name: sport_data_debezium
+
+    # Debezium doit démarrer après Redpanda.
+    # Cela ne remplace pas les contrôles de disponibilité,
+    # mais évite de lancer les services dans le mauvais ordre.
+    depends_on:
+      - redpanda
+
+    environment:
+      # Adresse Kafka vue depuis le réseau Docker.
+      # On utilise donc redpanda:9092 et non localhost:9092.
+      BOOTSTRAP_SERVERS: redpanda:9092
+
+      # Identifiant du groupe Kafka Connect.
+      GROUP_ID: sport-data-connect
+
+      # Topics techniques utilisés par Kafka Connect
+      # pour conserver sa configuration, ses offsets
+      # et l'état des connecteurs.
+      CONFIG_STORAGE_TOPIC: sport-data-connect-configs
+      OFFSET_STORAGE_TOPIC: sport-data-connect-offsets
+      STATUS_STORAGE_TOPIC: sport-data-connect-status
+
+      # Notre POC ne possède qu'un seul broker Redpanda.
+      # On utilise donc un facteur de réplication de 1.
+      CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      STATUS_STORAGE_REPLICATION_FACTOR: 1
+
+    ports:
+      # API REST Kafka Connect.
+      # Nous l'utiliserons pour créer et contrôler
+      # le connecteur PostgreSQL.
+      - "8083:8083"
+
+  spark:
+    # -------------------------------------------------------
+    # APACHE SPARK
+    # -------------------------------------------------------
+    # Spark est utilisé pour traiter les événements sportifs
+    # provenant de Redpanda.
+    #
+    # Le pipeline prévu est :
+    #
+    # Redpanda
+    #    ↓
+    # Spark Structured Streaming
+    #    ↓
+    # Delta Lake
+    #
+    # Un second traitement Spark exploitera ensuite les
+    # données Delta pour calculer les indicateurs métier.
+
+    image: apache/spark:3.5.3
+
+    container_name: sport_data_spark
+
+    # Le conteneur reste actif afin que nous puissions
+    # lancer les scripts PySpark manuellement avec
+    # spark-submit pendant le développement du POC.
+    command:
+      - /bin/bash
+      - -c
+      - "tail -f /dev/null"
+
+    # Spark doit être lancé après Redpanda.
+    # Cela ne signifie pas encore qu'il consomme le topic :
+    # cette configuration sera faite dans le script PySpark.
+    depends_on:
+      - redpanda
+
+    volumes:
+
+      # Contient les scripts PySpark du projet.
+      - ./spark:/opt/spark/work-dir/scripts
+
+      # Contient les tables Delta Lake générées par Spark.
+      - ./data/delta:/opt/spark/work-dir/delta
+
+      # Contient les checkpoints de Spark Structured Streaming.
+      # Ils permettent notamment à Spark de mémoriser
+      # la progression de la lecture du topic Redpanda.
+      - ./data/checkpoints:/opt/spark/work-dir/checkpoints
+      - ./data/powerbi:/opt/spark/work-dir/powerbi
+
+# ---------------------------------------------------------
+# VOLUMES DOCKER
+# ---------------------------------------------------------
+
+volumes:
+  postgres_data:
+  redpanda_data:
