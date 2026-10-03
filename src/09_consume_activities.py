@@ -29,6 +29,9 @@ import requests
 
 from dotenv import load_dotenv
 
+import base64
+from decimal import Decimal
+
 # ============================================================
 # CONFIGURATION SLACK
 # ============================================================
@@ -100,13 +103,12 @@ def send_slack_message(message):
 
 # Ce script est exécuté directement depuis Windows.
 # Il utilise donc le listener EXTERNAL de Redpanda.
-BOOTSTRAP_SERVERS = "redpanda:9092"
-
+BOOTSTRAP_SERVERS = "localhost:19092"
 # Topic créé automatiquement par Debezium pour la table activities.
 TOPIC_NAME = "sport-data.public.activities"
 
 # Kafka/Redpanda mémorise les offsets consommés pour ce groupe.
-GROUP_ID = "sport-data-slack-consumer-test"
+GROUP_ID = "sport-data-slack-consumer-mentorat"
 
 
 # ============================================================
@@ -128,8 +130,8 @@ if not POSTGRES_PASSWORD:
 
 
 DB_CONFIG = {
-    "host": "postgres",
-    "port": 5432,
+    "host": "localhost",
+    "port": 5433,
     "dbname": "sport_data_db",
     "user": "sport_user",
     "password": POSTGRES_PASSWORD,
@@ -261,26 +263,41 @@ def format_duration(start_datetime, end_datetime):
 
 def format_distance(distance_meters):
     """
-    Transforme une distance en mètres en kilomètres lisibles.
+    Convertit la distance Debezium en kilomètres lisibles.
+
+    Le champ PostgreSQL distance_meters est de type NUMERIC(10, 2).
+    Debezium le publie comme un Decimal Kafka Connect :
+    - bytes encodés en Base64 ;
+    - scale = 2.
 
     Exemple :
-        10800 mètres -> "10,8 km"
-
-    Certaines activités, comme le tennis, peuvent légitimement
-    avoir une distance NULL. Dans ce cas, aucune distance
-    ne sera affichée dans le message.
+    "CSfA" -> 6000.00 mètres -> 6.00 km
     """
 
     if distance_meters is None:
-        return None
+        return "Distance non renseignée"
 
-    distance_km = float(distance_meters) / 1000
+    try:
+        # Debezium sérialise le Decimal sous forme Base64.
+        decoded_bytes = base64.b64decode(distance_meters)
 
-    # Format français : remplacement du point décimal
-    # par une virgule pour l'affichage.
-    return f"{distance_km:.1f}".replace(".", ",") + " km"
+        # Kafka Connect Decimal utilise un entier signé big-endian.
+        unscaled_value = int.from_bytes(
+            decoded_bytes,
+            byteorder="big",
+            signed=True
+        )
 
+        # Le schéma Debezium indique scale = 2.
+        distance_decimal = Decimal(unscaled_value).scaleb(-2)
 
+        distance_km = distance_decimal / Decimal("1000")
+
+        return f"{distance_km:.2f} km"
+
+    except (ValueError, TypeError):
+        return "Distance invalide"
+    
 # ============================================================
 # FONCTION : CONSTRUCTION DU MESSAGE SLACK
 # ============================================================
@@ -346,7 +363,7 @@ consumer = Consumer(
 
         # Si aucun offset n'existe encore pour ce groupe,
         # la lecture commence au premier événement disponible.
-        "auto.offset.reset": "earliest",
+        "auto.offset.reset": "latest",
     }
 )
 

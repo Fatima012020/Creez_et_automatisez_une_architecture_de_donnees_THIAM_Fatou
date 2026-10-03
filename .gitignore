@@ -47,3 +47,5 @@ Thumbs.db
 
 # Configuration locale Debezium contenant les identifiants PostgreSQL
 debezium/postgres-activities-connector.json
+# Fichiers temporaires Microsoft Office
+~$*
