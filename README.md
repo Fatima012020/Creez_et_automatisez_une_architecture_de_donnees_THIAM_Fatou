@@ -1,4 +1,4 @@
-﻿# Sport Data Solution
+# Sport Data Solution
 
 ## Créer et automatiser une architecture de données
 
@@ -45,7 +45,9 @@ L'objectif du POC est notamment de :
 
 ## Architecture de la solution
 
-L'architecture combine un stockage PostgreSQL, un flux temps réel basé sur le **CDC (Change Data Capture)** et deux branches de traitement après Redpanda.
+L'architecture repose sur PostgreSQL, un flux temps réel basé sur le **CDC (Change Data Capture)** et deux branches de traitement après Redpanda.
+
+Une fois les services démarrés avec Docker Compose, les composants du pipeline fonctionnent en continu. L'arrivée d'une nouvelle activité dans PostgreSQL constitue l'événement déclencheur : aucun lancement manuel des scripts de traitement n'est nécessaire.
 
 ```text
                          PostgreSQL
@@ -55,13 +57,15 @@ L'architecture combine un stockage PostgreSQL, un flux temps réel basé sur le 
                           Redpanda
                          /        \
                         /          \
-              Consumer Python      Spark
+              Consumer Python    Spark Streaming
                     │                │
                   Slack          Delta Lake
                                      │
+                              Worker automatique
+                                     │
                               employee_benefits
                                      │
-                                   CSV
+                           CSV Power BI régénérés
                                      │
                                  Power BI
 ```
@@ -80,7 +84,7 @@ Consumer Python
 Slack
 ```
 
-Cette branche permet de détecter une nouvelle activité sportive et d'envoyer une notification Slack.
+Cette branche permet de détecter automatiquement une nouvelle activité sportive et d'envoyer une notification Slack.
 
 ### Branche analytique
 
@@ -91,42 +95,55 @@ Debezium
     │
 Redpanda
     │
-Spark
+Spark Streaming
     │
 Delta Lake
     │
+Worker automatique
+    │
 employee_benefits
     │
-CSV
+CSV Power BI
     │
 Power BI
 ```
 
-Cette branche permet de contrôler, transformer et consolider les données avant leur restitution métier.
+Cette branche fonctionne automatiquement après l'arrivée d'une nouvelle activité.
+
+Spark Streaming consomme les événements Redpanda et alimente Delta Lake. Le worker métier surveille ensuite les nouvelles versions Delta. Lorsqu'une nouvelle version est détectée, il déclenche automatiquement le recalcul de `employee_benefits` puis la régénération des fichiers CSV destinés à Power BI.
+
+Power BI constitue la couche de restitution : les règles métier sont calculées en amont du dashboard.
 
 ### Services complémentaires
 
 - **Google Maps API** : validation des trajets sportifs domicile-travail ;
 - **Monitoring** : contrôle des volumes, doublons, valeurs NULL et incohérences ;
-- **Docker Compose** : orchestration de l'environnement technique local.
+- **Docker Compose** : démarrage et maintien des différents services de l'architecture ;
+- **Worker métier automatique** : détection des nouvelles versions Delta, recalcul des avantages salariés et export Power BI ;
+- **Checkpoints** : mémorisation de l'état du streaming et de la dernière version métier traitée avec succès ;
+- **Restart policies Docker** : redémarrage automatique des services concernés en cas d'arrêt inattendu.
 
 ---
 
 ## Fonctionnement du pipeline
 
-1. Les données RH sont auditées puis chargées dans PostgreSQL.
+Le pipeline est conçu pour fonctionner automatiquement après le démarrage des services.
+
+1. Les données RH sont auditées puis chargées dans PostgreSQL lors de l'initialisation du POC.
 2. Des activités sportives sont générées afin de simuler une source de données de type Strava.
 3. Les trajets domicile-travail éligibles sont contrôlés avec Google Maps.
-4. Debezium surveille la table `public.activities` grâce au CDC.
-5. Lorsqu'une activité est ajoutée ou modifiée, l'événement est publié dans Redpanda.
-6. Deux traitements peuvent alors être exécutés :
-   - un consumer Python récupère l'événement et peut envoyer une notification Slack ;
-   - Spark traite les données destinées à la branche analytique.
-7. Les données analytiques sont stockées dans Delta Lake.
-8. La table métier `employee_benefits` est construite.
-9. Les données finales sont exportées au format CSV.
-10. Power BI utilise ces données pour restituer les indicateurs métier.
-11. Des contrôles de monitoring vérifient la cohérence globale du pipeline.
+4. Debezium surveille en continu la table `public.activities` grâce au CDC.
+5. Lorsqu'une nouvelle activité est ajoutée ou modifiée, Debezium publie automatiquement l'événement dans Redpanda.
+6. Redpanda distribue l'événement vers deux branches fonctionnant en continu :
+   - le consumer Python traite l'événement et envoie la notification Slack ;
+   - Spark Streaming traite l'événement et alimente Delta Lake.
+7. Le worker métier surveille automatiquement les nouvelles versions de Delta Lake.
+8. Lorsqu'une nouvelle version est détectée, le worker recalcule `employee_benefits`.
+9. Si le calcul réussit, les fichiers CSV destinés à Power BI sont automatiquement régénérés.
+10. Le checkpoint métier est mis à jour uniquement lorsque l'ensemble du traitement a réussi.
+11. Power BI utilise les CSV produits par le pipeline comme couche de restitution.
+
+Ainsi, après l'arrivée d'une nouvelle activité, aucun script de traitement n'a besoin d'être lancé manuellement.
 
 ---
 
@@ -154,7 +171,8 @@ Cette branche permet de contrôler, transformer et consolider les données avant
 │   ├── 11_export_powerbi.py
 │   ├── 12_monitor_pipeline.py
 │   ├── 13_check_last_delta.py
-│   └── 14_cleanup_delta.py
+│   ├── 14_cleanup_delta.py
+│   └── 15_auto_benefits_worker.py
 │
 ├── sql/
 │   └── 01_create_tables.sql
@@ -391,6 +409,82 @@ Delta Lake constitue la couche de stockage analytique du POC.
 
 ---
 
+# Automatisation du pipeline
+
+L'architecture a été conçue pour éviter le lancement manuel des différentes étapes après l'arrivée d'une nouvelle activité.
+
+Après :
+
+```powershell
+docker compose up -d
+```
+
+les services persistants restent actifs et surveillent les nouvelles données.
+
+```text
+Nouvelle activité PostgreSQL
+            │
+            ▼
+         Debezium
+            │
+            ▼
+         Redpanda
+        /        \
+       ▼          ▼
+Consumer        Spark Streaming
+   │               │
+   ▼               ▼
+ Slack          Delta Lake
+                    │
+                    ▼
+             Worker automatique
+                    │
+                    ▼
+             employee_benefits
+                    │
+                    ▼
+              CSV Power BI
+```
+
+Une nouvelle activité constitue donc le seul événement nécessaire pour déclencher le traitement de bout en bout. Le consumer Slack, Spark Streaming et le worker métier fonctionnent comme des services persistants de l'architecture Docker.
+
+---
+
+# Résilience et reprise automatique
+
+Le pipeline intègre des mécanismes permettant de reprendre automatiquement les traitements après certains incidents.
+
+Spark Streaming utilise un checkpoint pour mémoriser l'état du flux. Le worker conserve également la dernière version Delta traitée avec succès dans un checkpoint persistant.
+
+```text
+Nouvelle version Delta
+        │
+        ▼
+Calcul employee_benefits
+        │
+        ▼
+Export Power BI
+        │
+        ├── Succès → checkpoint mis à jour
+        └── Échec  → checkpoint conservé
+                         │
+                         ▼
+                    Retry automatique
+```
+
+En cas d'échec du calcul métier ou de l'export :
+
+- le checkpoint n'est pas avancé ;
+- la version Delta reste à traiter ;
+- le worker attend avant d'effectuer une nouvelle tentative ;
+- après rétablissement du service indisponible, le traitement peut reprendre automatiquement.
+
+Ce mécanisme a notamment été testé en rendant PostgreSQL temporairement indisponible pendant un traitement : le checkpoint n'a pas été avancé pendant l'échec et le worker a repris automatiquement le traitement après le retour de PostgreSQL.
+
+Les services Docker concernés utilisent également une politique de redémarrage afin d'améliorer la résilience de l'environnement local.
+
+---
+
 # Monitoring et qualité des données
 
 Le pipeline contient plusieurs contrôles automatiques.
@@ -446,7 +540,13 @@ Le monitoring final a confirmé :
 
 # Restitution Power BI
 
-Les données métier sont exportées automatiquement au format CSV.
+Les données métier destinées à Power BI sont produites en amont par le pipeline.
+
+Lorsqu'une nouvelle version Delta est détectée, le worker métier :
+
+1. recalcule automatiquement `employee_benefits` ;
+2. contrôle le résultat du traitement ;
+3. régénère automatiquement les fichiers CSV destinés à Power BI.
 
 Deux fichiers principaux sont utilisés :
 
@@ -455,22 +555,11 @@ data/powerbi/employee_benefits.csv
 data/powerbi/activities.csv
 ```
 
-Volumes finaux :
+Le fichier `Sport_data.pbix` est connecté à ces données et constitue la couche de restitution du projet.
 
-```text
-employee_benefits.csv : 161 lignes
-activities.csv         : 2 550 lignes
-```
+Les règles métier ne sont pas recalculées dans Power BI : elles sont préparées en amont par le pipeline. Dans l'environnement local du POC, une actualisation du rapport Power BI permet d'afficher les dernières données produites automatiquement.
 
-Le fichier :
-
-```text
-Sport_data.pbix
-```
-
-contient le tableau de bord Power BI du projet.
-
-Il permet notamment de visualiser :
+Le tableau de bord permet notamment de visualiser :
 
 - le nombre total de salariés ;
 - les salariés éligibles à la prime sportive ;
@@ -479,8 +568,6 @@ Il permet notamment de visualiser :
 - le nombre de journées attribuées ;
 - les activités par type de sport ;
 - les avantages par Business Unit.
-
-Les règles métier sont calculées **en amont du dashboard**. Power BI est principalement utilisé comme couche de restitution et d'analyse.
 
 ---
 
@@ -569,12 +656,16 @@ Vérifier les services :
 docker compose ps
 ```
 
-L'environnement Docker fournit notamment :
+L'environnement Docker démarre notamment :
 
 - PostgreSQL ;
 - Debezium / Kafka Connect ;
 - Redpanda ;
-- Spark.
+- Spark Streaming ;
+- le consumer Python pour les notifications Slack ;
+- le worker automatique chargé du recalcul métier et des exports Power BI.
+
+Après le démarrage des services, aucune exécution manuelle des scripts de traitement n'est nécessaire pour traiter une nouvelle activité.
 
 ---
 
@@ -606,179 +697,121 @@ sport-data.public.activities
 
 # Exécution du pipeline
 
-## 1. Démarrer les services
+## Mode automatique — fonctionnement nominal
+
+Démarrer l'ensemble des services :
 
 ```powershell
 docker compose up -d
+```
+
+Vérifier leur état :
+
+```powershell
 docker compose ps
 ```
 
----
+Une fois les services démarrés, le pipeline fonctionne en continu.
 
-## 2. Auditer les données
-
-```powershell
-python .\src\01_audit_donnees.py
-```
-
----
-
-## 3. Charger les données RH dans PostgreSQL
-
-```powershell
-python .\src\03_ingest_excel.py
-```
-
----
-
-## 4. Tester Google Maps sur un trajet
-
-```powershell
-python .\src\04_test_google_routes.py
-```
-
----
-
-## 5. Valider les trajets domicile-travail
-
-```powershell
-python .\src\05_validate_commutes.py
-```
-
----
-
-## 6. Générer les activités sportives
-
-```powershell
-python .\src\06_generate_activities.py
-```
-
----
-
-## 7. Charger les activités
-
-```powershell
-python .\src\07_load_activities.py
-```
-
----
-
-## 8. Contrôler leur qualité
-
-```powershell
-python .\src\08_check_activities_quality.py
-```
-
----
-
-# Exécution de la branche Slack
-
-Le consumer Python écoute les événements publiés dans Redpanda.
-
-```powershell
-python .\src\09_consume_activities.py
-```
-
-Lorsqu'une nouvelle activité est détectée, une notification peut être envoyée dans Slack.
-
-Un test spécifique Slack est également disponible :
-
-```powershell
-python .\src\10_test_slack.py
-```
-
----
-
-# Exécution de la branche Spark / Delta Lake
-
-## Construire `employee_benefits`
-
-```powershell
-docker exec -it sport_data_spark /opt/spark/bin/spark-submit /opt/spark/work-dir/scripts/10_build_employee_benefits.py
-```
-
----
-
-## Exporter les données Power BI
-
-```powershell
-docker exec -it sport_data_spark /opt/spark/bin/spark-submit /opt/spark/work-dir/scripts/11_export_powerbi.py
-```
-
-Les fichiers produits sont :
+L'ajout d'une nouvelle activité dans `public.activities` constitue l'événement déclencheur. Il n'est pas nécessaire de lancer manuellement le consumer, Spark Streaming, le calcul de `employee_benefits` ou l'export Power BI.
 
 ```text
-data/powerbi/employee_benefits.csv
-data/powerbi/activities.csv
-```
-
----
-
-## Contrôler le pipeline
-
-```powershell
-docker exec -it sport_data_spark /opt/spark/bin/spark-submit /opt/spark/work-dir/scripts/12_monitor_pipeline.py
-```
-
----
-
-## Vérifier les dernières données Delta
-
-```powershell
-docker exec -it sport_data_spark /opt/spark/bin/spark-submit /opt/spark/work-dir/scripts/13_check_last_delta.py
-```
-
----
-
-## Nettoyage Delta
-
-Le script :
-
-```text
-spark/14_cleanup_delta.py
-```
-
-permet d'effectuer le nettoyage prévu pour l'environnement Delta utilisé par le POC.
-
----
-
-# Démonstration du flux temps réel
-
-Le scénario de démonstration permet de montrer le parcours d'une nouvelle activité dans l'architecture.
-
-```text
-INSERT / UPDATE PostgreSQL
-          │
-          ▼
+INSERT / nouvelle activité
+          ↓
        Debezium
-          │
-          ▼
+          ↓
        Redpanda
        /      \
-      /        \
-Consumer       Spark
- Python          │
-    │         Delta Lake
-    ▼             │
-  Slack     employee_benefits
-                  │
-                 CSV
-                  │
-               Power BI
+      ↓        ↓
+   Slack     Delta Lake
+                ↓
+         Worker automatique
+                ↓
+        employee_benefits
+                ↓
+           CSV Power BI
 ```
 
-La démonstration permet notamment de vérifier :
+Les scripts individuels restent disponibles pour le développement, les tests et le diagnostic, mais ils ne constituent pas le mode normal d'exécution du pipeline.
 
-1. l'insertion d'une activité dans PostgreSQL ;
-2. sa détection par Debezium ;
-3. sa publication dans Redpanda ;
-4. sa consommation ;
-5. la notification Slack ;
-6. son traitement dans la branche analytique ;
-7. son stockage dans Delta Lake ;
-8. la construction des données métier ;
-9. l'export CSV ;
-10. la restitution dans Power BI.
+---
+
+# Branche Slack
+
+Le consumer Python est exécuté comme un service persistant de l'environnement Docker. Il écoute en continu les événements publiés dans Redpanda et envoie automatiquement une notification Slack lorsqu'une nouvelle activité est détectée.
+
+Il n'est donc pas nécessaire de lancer `src/09_consume_activities.py` manuellement lors du fonctionnement nominal.
+
+---
+
+# Branche Spark / Delta Lake
+
+Spark Streaming fonctionne comme un service persistant et consomme automatiquement les nouvelles activités publiées dans Redpanda. Les activités valides sont enregistrées dans Delta Lake.
+
+Le worker métier surveille ensuite les nouvelles versions Delta. Lorsqu'une nouvelle version est disponible, il exécute automatiquement :
+
+```text
+10_build_employee_benefits.py
+        ↓
+11_export_powerbi.py
+```
+
+Le premier traitement recalcule `employee_benefits` et le second régénère les fichiers `data/powerbi/employee_benefits.csv` et `data/powerbi/activities.csv`.
+
+Ces scripts peuvent toujours être exécutés manuellement à des fins de développement ou de diagnostic, mais leur lancement manuel n'est pas nécessaire dans le fonctionnement nominal.
+
+---
+
+# Outils de contrôle et de diagnostic
+
+Les scripts `12_monitor_pipeline.py`, `13_check_last_delta.py` et `14_cleanup_delta.py` sont des outils de vérification et de maintenance. Ils ne déclenchent pas le fonctionnement nominal du pipeline.
+
+---
+
+# Démonstration du pipeline automatisé
+
+La démonstration a pour objectif de montrer qu'une seule nouvelle activité suffit à déclencher l'ensemble du pipeline.
+
+```text
+                  Nouvelle activité
+                      PostgreSQL
+                          │
+                          ▼
+                       Debezium
+                          │
+                          ▼
+                       Redpanda
+                      /        \
+                     ▼          ▼
+             Consumer Python   Spark Streaming
+                    │              │
+                    ▼              ▼
+                  Slack         Delta Lake
+                                   │
+                                   ▼
+                            Worker automatique
+                                   │
+                                   ▼
+                           employee_benefits
+                                   │
+                                   ▼
+                              CSV Power BI
+```
+
+Le scénario de démonstration est volontairement minimal :
+
+1. vérifier que les services Docker sont démarrés ;
+2. insérer une seule nouvelle activité dans PostgreSQL ;
+3. ne lancer aucun script de traitement ;
+4. observer l'apparition automatique de la notification Slack ;
+5. constater le traitement automatique de la branche Spark / Delta Lake ;
+6. constater le recalcul automatique de `employee_benefits` ;
+7. constater la régénération des CSV ;
+8. actualiser Power BI afin d'afficher les nouvelles données.
+
+**Après l'INSERT PostgreSQL, aucun script de traitement n'est lancé manuellement.**
+
+Les commandes de consultation des logs éventuellement utilisées pendant la démonstration servent uniquement à observer les traitements réalisés automatiquement.
 
 ---
 
@@ -881,14 +914,16 @@ Support_Soutenance_P12_Sport_Data_Solution_Fatou_THIAM.pptx
 
 # Limites du POC
 
-La solution actuelle constitue un POC fonctionnel.
+La solution actuelle constitue un POC fonctionnel et automatisé dans un environnement Docker local.
 
 Les principales limites sont :
 
 - les activités Strava sont simulées ;
 - l'environnement fonctionne localement avec Docker ;
 - certaines règles métier sont directement définies dans le code ;
-- le système n'est pas encore déployé dans un environnement cloud de production.
+- Power BI Desktop nécessite une actualisation du rapport pour afficher les derniers CSV produits ;
+- le système n'est pas encore déployé dans un environnement cloud de production ;
+- l'orchestration repose sur les services Docker, le streaming et le worker métier plutôt que sur un orchestrateur de production dédié.
 
 ---
 
@@ -900,7 +935,8 @@ Les évolutions envisagées sont notamment :
 - externaliser les paramètres et seuils métier ;
 - mettre en place une gestion centralisée des secrets ;
 - renforcer le monitoring et l'alerting ;
-- automatiser davantage l'orchestration ;
+- industrialiser l'orchestration avec un outil dédié dans un environnement de production ;
+- automatiser l'actualisation de la couche de restitution dans un environnement Power BI Service ;
 - déployer l'architecture dans le cloud ;
 - renforcer la sécurité et la supervision de l'environnement.
 
@@ -908,22 +944,27 @@ Les évolutions envisagées sont notamment :
 
 # Conclusion
 
-Ce projet met en œuvre une architecture de données complète allant de la source jusqu'à la restitution métier.
+Ce projet met en œuvre une architecture de données événementielle permettant de traiter automatiquement une nouvelle activité sportive depuis PostgreSQL jusqu'aux données destinées à Power BI.
 
-Il permet de mettre en pratique :
+Le POC permet de mettre en pratique :
 
 - l'audit et la qualité des données ;
 - PostgreSQL ;
 - le Change Data Capture avec Debezium ;
 - le streaming avec Redpanda ;
-- le traitement Python et PySpark ;
+- les traitements Python et PySpark ;
+- Spark Streaming ;
 - le stockage Delta Lake ;
-- les notifications Slack ;
-- les règles métier ;
+- les notifications Slack automatiques ;
+- le calcul des règles métier ;
 - le monitoring ;
-- l'export de données ;
-- la restitution Power BI ;
-- Docker ;
+- les checkpoints et la reprise sur erreur ;
+- l'export automatique des données Power BI ;
+- Docker / Docker Compose ;
 - Git et GitHub.
 
-Le POC permet ainsi de suivre le parcours d'une donnée depuis son arrivée dans PostgreSQL jusqu'à son exploitation métier dans Power BI, tout en proposant une branche temps réel dédiée aux notifications Slack.
+Après le démarrage de l'environnement, une nouvelle activité dans PostgreSQL suffit à déclencher automatiquement sa propagation dans le pipeline.
+
+Debezium capture le changement, Redpanda distribue l'événement, le consumer Python alimente Slack, Spark Streaming alimente Delta Lake et le worker métier recalcule les avantages salariés puis régénère les fichiers destinés à Power BI.
+
+Le POC démontre ainsi non seulement la faisabilité technique de l'architecture, mais également son **automatisation de bout en bout, son observabilité et sa capacité de reprise après incident**.

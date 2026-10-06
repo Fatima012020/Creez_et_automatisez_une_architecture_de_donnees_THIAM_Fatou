@@ -1,0 +1,16 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Installation des dépendances Python nécessaires au consumer.
+RUN pip install --no-cache-dir \
+    psycopg[binary] \
+    confluent-kafka \
+    requests \
+    python-dotenv
+
+# Copie uniquement le consumer dans l'image.
+COPY src/09_consume_activities.py /app/src/09_consume_activities.py
+
+# Le consumer reste actif et écoute Redpanda.
+CMD ["python", "-u", "/app/src/09_consume_activities.py"]

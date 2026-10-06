@@ -101,15 +101,23 @@ def send_slack_message(message):
 # CONFIGURATION REDPANDA
 # ============================================================
 
-# Ce script est exécuté directement depuis Windows.
-# Il utilise donc le listener EXTERNAL de Redpanda.
-BOOTSTRAP_SERVERS = "localhost:19092"
-# Topic créé automatiquement par Debezium pour la table activities.
-TOPIC_NAME = "sport-data.public.activities"
+# Les valeurs sont récupérées depuis les variables
+# d'environnement. Les valeurs par défaut correspondent
+# au réseau Docker du projet.
+BOOTSTRAP_SERVERS = os.getenv(
+    "REDPANDA_BOOTSTRAP_SERVERS",
+    "redpanda:9092"
+)
 
-# Kafka/Redpanda mémorise les offsets consommés pour ce groupe.
-GROUP_ID = "sport-data-slack-consumer-mentorat"
+TOPIC_NAME = os.getenv(
+    "REDPANDA_TOPIC",
+    "sport-data.public.activities"
+)
 
+GROUP_ID = os.getenv(
+    "REDPANDA_GROUP_ID",
+    "sport-data-slack-consumer"
+)
 
 # ============================================================
 # CONFIGURATION POSTGRESQL
@@ -130,10 +138,10 @@ if not POSTGRES_PASSWORD:
 
 
 DB_CONFIG = {
-    "host": "localhost",
-    "port": 5433,
-    "dbname": "sport_data_db",
-    "user": "sport_user",
+    "host": os.getenv("POSTGRES_HOST", "postgres"),
+    "port": int(os.getenv("POSTGRES_PORT", "5432")),
+    "dbname": os.getenv("POSTGRES_DB", "sport_data_db"),
+    "user": os.getenv("POSTGRES_USER", "sport_user"),
     "password": POSTGRES_PASSWORD,
 }
 

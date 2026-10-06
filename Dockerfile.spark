@@ -1,0 +1,12 @@
+FROM apache/spark:3.5.3
+
+USER root
+
+# Dossier Ivy accessible par l'utilisateur Spark.
+RUN mkdir -p /opt/spark/.ivy2 \
+    && chown -R 185:0 /opt/spark/.ivy2 \
+    && chmod -R 775 /opt/spark/.ivy2
+
+USER 185
+
+WORKDIR /opt/spark/work-dir

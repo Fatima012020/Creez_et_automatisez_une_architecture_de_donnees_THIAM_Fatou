@@ -142,60 +142,142 @@ services:
       # le connecteur PostgreSQL.
       - "8083:8083"
 
+  consumer:
+    # -------------------------------------------------------
+    # CONSUMER PYTHON - NOTIFICATIONS SLACK
+    # -------------------------------------------------------
+    # Ce service écoute automatiquement les nouvelles
+    # activités publiées par Debezium dans Redpanda.
+    #
+    # Il enrichit chaque activité avec les informations
+    # du salarié stockées dans PostgreSQL puis envoie
+    # automatiquement une notification Slack.
+
+    build:
+      context: .
+      dockerfile: Dockerfile.consumer
+
+    container_name: sport_data_consumer
+
+    # Le consumer redémarre automatiquement en cas
+    # d'arrêt inattendu du processus.
+    restart: unless-stopped
+
+    environment:
+      # PostgreSQL accessible depuis le réseau Docker.
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+
+      # Redpanda accessible depuis le réseau Docker.
+      REDPANDA_BOOTSTRAP_SERVERS: redpanda:9092
+      REDPANDA_TOPIC: sport-data.public.activities
+      REDPANDA_GROUP_ID: sport-data-slack-consumer
+
+      # Secret Slack provenant du fichier .env.
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda:
+        condition: service_started
+
   spark:
     # -------------------------------------------------------
-    # APACHE SPARK
+    # SPARK STRUCTURED STREAMING
     # -------------------------------------------------------
-    # Spark est utilisé pour traiter les événements sportifs
-    # provenant de Redpanda.
+    # Ce service consomme automatiquement les événements
+    # Redpanda et les écrit dans Delta Lake.
     #
-    # Le pipeline prévu est :
-    #
-    # Redpanda
-    #    ↓
-    # Spark Structured Streaming
-    #    ↓
-    # Delta Lake
-    #
-    # Un second traitement Spark exploitera ensuite les
-    # données Delta pour calculer les indicateurs métier.
+    # Il fonctionne en continu et utilise un checkpoint
+    # persistant pour reprendre après une interruption.
 
-    image: apache/spark:3.5.3
+    build:
+      context: .
+      dockerfile: Dockerfile.spark
 
     container_name: sport_data_spark
 
-    # Le conteneur reste actif afin que nous puissions
-    # lancer les scripts PySpark manuellement avec
-    # spark-submit pendant le développement du POC.
-    command:
-      - /bin/bash
-      - -c
-      - "tail -f /dev/null"
+    restart: unless-stopped
 
-    # Spark doit être lancé après Redpanda.
-    # Cela ne signifie pas encore qu'il consomme le topic :
-    # cette configuration sera faite dans le script PySpark.
     depends_on:
-      - redpanda
+      redpanda:
+        condition: service_started
+
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
 
     volumes:
-
-      # Contient les scripts PySpark du projet.
       - ./spark:/opt/spark/work-dir/scripts
-
-      # Contient les tables Delta Lake générées par Spark.
       - ./data/delta:/opt/spark/work-dir/delta
-
-      # Contient les checkpoints de Spark Structured Streaming.
-      # Ils permettent notamment à Spark de mémoriser
-      # la progression de la lecture du topic Redpanda.
       - ./data/checkpoints:/opt/spark/work-dir/checkpoints
       - ./data/powerbi:/opt/spark/work-dir/powerbi
 
+    command:
+      - /opt/spark/bin/spark-submit
+      - --master
+      - local[*]
+      - --packages
+      - org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.3,io.delta:delta-spark_2.12:3.2.0
+      - --conf
+      - spark.jars.ivy=/opt/spark/.ivy2
+      - /opt/spark/work-dir/scripts/04_stream_to_delta.py
+
+  benefits-worker:
+    # -------------------------------------------------------
+    # AUTOMATISATION DES CALCULS MÉTIER ET DE POWER BI
+    # -------------------------------------------------------
+    # Surveille Delta activities.
+    #
+    # Lorsqu'une nouvelle transaction Delta est détectée :
+    # 1. employee_benefits est recalculé ;
+    # 2. les contrôles qualité sont exécutés ;
+    # 3. les CSV Power BI sont régénérés.
+    #
+    # En cas d'erreur, le worker reste actif et réessaie.
+
+    build:
+      context: .
+      dockerfile: Dockerfile.spark
+
+    container_name: sport_data_benefits_worker
+
+    restart: unless-stopped
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      spark:
+        condition: service_started
+
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+
+    volumes:
+      - ./spark:/opt/spark/work-dir/scripts
+      - ./data/delta:/opt/spark/work-dir/delta
+      - ./data/checkpoints:/opt/spark/work-dir/checkpoints
+      - ./data/powerbi:/opt/spark/work-dir/powerbi
+
+    command:
+      - python3
+      - -u
+      - /opt/spark/work-dir/scripts/15_auto_benefits_worker.py
+      
 # ---------------------------------------------------------
 # VOLUMES DOCKER
 # ---------------------------------------------------------
 
 volumes:
+
+  # Réutilisation du volume PostgreSQL historique du projet V2.
+  # Ce volume contient les données métier déjà générées :
+  # employés, profils sportifs, activités et validations trajets.
   postgres_data:
+    external: true
+    name: crez_et_automatisez_une_architecture_de_donnees_v2_postgres_data
+
   redpanda_data:

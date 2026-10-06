@@ -1,10 +1,34 @@
 from pyspark.sql import SparkSession
 from delta.tables import DeltaTable
 
-# Chemin de la table Delta des activités
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
 DELTA_PATH = "/opt/spark/work-dir/delta/activities"
 
-# Création de la session Spark avec Delta Lake
+# Activités de test/démonstration à supprimer.
+# L'objectif est de revenir à l'état de référence :
+# 2 549 activités, avec activity_id = 2549 comme dernier ID.
+ACTIVITY_IDS_TO_DELETE = [
+    2550,
+    2559,
+    2560,
+    2561,
+    2562,
+    2563,
+    2564,
+    2597,
+    2598,
+    2599,
+    2600,
+]
+
+
+# ============================================================
+# SESSION SPARK + DELTA LAKE
+# ============================================================
+
 spark = (
     SparkSession.builder
     .appName("CleanupDeltaActivities")
@@ -21,47 +45,76 @@ spark = (
 
 spark.sparkContext.setLogLevel("WARN")
 
-# Ouverture de la table Delta
+
+# ============================================================
+# OUVERTURE DE LA TABLE DELTA
+# ============================================================
+
 delta_table = DeltaTable.forPath(spark, DELTA_PATH)
+
+before = spark.read.format("delta").load(DELTA_PATH)
 
 print("=" * 60)
 print("NETTOYAGE DELTA")
 print("=" * 60)
 
-# État avant nettoyage
-before = spark.read.format("delta").load(DELTA_PATH)
+before_count = before.count()
 
-print(f"Lignes avant nettoyage : {before.count()}")
+print(f"Lignes avant nettoyage : {before_count}")
 
-print("\nActivités avec activity_id > 2550 :")
 
-before.filter(
-    "activity_id > 2550"
-).orderBy(
-    "activity_id"
-).show(truncate=False)
+# ============================================================
+# AFFICHAGE DES ACTIVITÉS QUI SERONT SUPPRIMÉES
+# ============================================================
 
-# Suppression uniquement des activités de démonstration
-delta_table.delete("activity_id > 2550")
+ids_string = ",".join(str(activity_id) for activity_id in ACTIVITY_IDS_TO_DELETE)
 
-# Vérification après suppression
+condition = f"activity_id IN ({ids_string})"
+
+print("\nActivités qui vont être supprimées :")
+
+before.filter(condition).orderBy("activity_id").show(
+    truncate=False
+)
+
+
+# ============================================================
+# SUPPRESSION
+# ============================================================
+
+delta_table.delete(condition)
+
+
+# ============================================================
+# VÉRIFICATION
+# ============================================================
+
 after = spark.read.format("delta").load(DELTA_PATH)
 
-print("=" * 60)
-print("RÉSULTAT")
-print("=" * 60)
-
-print(f"Lignes après nettoyage : {after.count()}")
+after_count = after.count()
 
 max_id = after.agg(
     {"activity_id": "max"}
 ).first()[0]
 
-print(f"Dernier activity_id : {max_id}")
+print("=" * 60)
+print("RÉSULTAT")
+print("=" * 60)
 
-if after.count() == 2550 and max_id == 2550:
+print(f"Lignes après nettoyage : {after_count}")
+print(f"Dernier activity_id     : {max_id}")
+
+
+# ============================================================
+# VALIDATION DE L'ÉTAT DE RÉFÉRENCE
+# ============================================================
+
+if after_count == 2549 and max_id == 2549:
     print("\nNETTOYAGE DELTA : OK")
+    print("Delta Lake est prêt pour la démonstration.")
 else:
     print("\nNETTOYAGE DELTA : À VÉRIFIER")
+    print("État attendu : 2549 lignes et dernier activity_id = 2549.")
+
 
 spark.stop()
