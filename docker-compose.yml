@@ -256,6 +256,10 @@ services:
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
 
+      # Webhook utilisé pour envoyer les alertes techniques
+      # en cas d'échec ou de reprise du pipeline métier.
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
+
     volumes:
       - ./spark:/opt/spark/work-dir/scripts
       - ./data/delta:/opt/spark/work-dir/delta

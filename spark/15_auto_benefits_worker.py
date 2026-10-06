@@ -21,9 +21,11 @@ Résilience :
     - reprise correcte après redémarrage du conteneur.
 """
 
+import json
 import os
 import subprocess
 import time
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 
@@ -57,6 +59,9 @@ STATE_FILE = Path(
 CHECK_INTERVAL_SECONDS = 10
 RETRY_DELAY_SECONDS = 30
 
+# Webhook Slack fourni par le fichier .env via Docker Compose.
+SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL")
+
 
 # ============================================================
 # LOGS
@@ -67,6 +72,61 @@ def log(message):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{timestamp}] {message}", flush=True)
 
+# ============================================================
+# ALERTING SLACK
+# ============================================================
+
+def send_slack_alert(message):
+    """
+    Envoie une alerte technique dans Slack.
+
+    Une erreur Slack ne doit jamais interrompre le pipeline :
+    l'alerting est un mécanisme de supervision, pas une
+    dépendance du traitement métier.
+    """
+
+    if not SLACK_WEBHOOK_URL:
+        log(
+            "Alerte Slack non envoyée : "
+            "SLACK_WEBHOOK_URL non configuré."
+        )
+        return False
+
+    try:
+        payload = json.dumps(
+            {"text": message}
+        ).encode("utf-8")
+
+        request = urllib.request.Request(
+            SLACK_WEBHOOK_URL,
+            data=payload,
+            headers={
+                "Content-Type": "application/json"
+            },
+            method="POST",
+        )
+
+        with urllib.request.urlopen(
+            request,
+            timeout=10,
+        ) as response:
+
+            if 200 <= response.status < 300:
+                log("Alerte Slack envoyée.")
+                return True
+
+            log(
+                "Slack a répondu avec le statut "
+                f"{response.status}."
+            )
+
+    except Exception as error:
+        log(
+            "Échec de l'envoi de l'alerte Slack : "
+            f"{type(error).__name__}: {error}"
+        )
+
+    return False
 
 # ============================================================
 # DELTA LAKE
@@ -247,6 +307,8 @@ def main():
 
     last_processed_version = initialise_checkpoint()
 
+    failed_version = None
+
     log(
         "Dernière version Delta traitée : "
         f"{last_processed_version}"
@@ -292,6 +354,18 @@ def main():
 
                 last_processed_version = current_version
 
+                if failed_version == current_version:
+
+                    send_slack_alert(
+                        "✅ PIPELINE SPORT DATA RÉTABLI\n"
+                        f"Version Delta : {current_version}\n"
+                        "Le traitement métier a finalement réussi.\n"
+                        "Le checkpoint a été mis à jour et "
+                        "la surveillance automatique reprend."
+                    )
+
+                    failed_version = None
+
                 log(
                     "Pipeline métier terminé avec succès "
                     f"pour la version Delta {current_version}."
@@ -324,6 +398,17 @@ def main():
                 f"Nouvelle tentative automatique dans "
                 f"{RETRY_DELAY_SECONDS} secondes."
             )
+            failed_version = current_version
+
+            send_slack_alert(
+                "🚨 ALERTE PIPELINE SPORT DATA\n"
+                f"Échec du traitement de la version Delta "
+                f"{current_version}.\n"
+                f"Code retour Spark : {error.returncode}\n"
+                "Le checkpoint métier n'a pas été modifié.\n"
+                f"Nouvelle tentative automatique dans "
+                f"{RETRY_DELAY_SECONDS} secondes."
+            )
 
             time.sleep(RETRY_DELAY_SECONDS)
 
@@ -348,6 +433,38 @@ def main():
 
             time.sleep(RETRY_DELAY_SECONDS)
 
+# ============================================================
+# TEST DE L'ALERTING
+# ============================================================
+
+def test_slack_alerting():
+    """
+    Teste les notifications techniques Slack sans modifier
+    PostgreSQL, Delta Lake ou le checkpoint métier.
+    """
+
+    log("Test de l'alerting Slack...")
+
+    send_slack_alert(
+        "🚨 TEST ALERTE PIPELINE SPORT DATA\n"
+        "Simulation d'un échec de traitement.\n"
+        "Le checkpoint métier ne serait pas modifié.\n"
+        "Une nouvelle tentative automatique serait programmée."
+    )
+
+    time.sleep(2)
+
+    send_slack_alert(
+        "✅ TEST RÉTABLISSEMENT PIPELINE SPORT DATA\n"
+        "Simulation du retour à la normale.\n"
+        "Le traitement peut reprendre automatiquement."
+    )
+
+    log("Test de l'alerting terminé.")
 
 if __name__ == "__main__":
-    main()
+
+    if os.getenv("TEST_SLACK_ALERTING") == "1":
+        test_slack_alerting()
+    else:
+        main()
